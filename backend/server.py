@@ -330,11 +330,11 @@ async def chat_with_ai(message_data: ChatMessage, current_user: User = Depends(g
         Provide helpful, concise financial advice and answer questions about budgeting, saving, and expense management.
         Keep responses friendly and educational for students."""
         
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"user_{current_user.id}",
-            system_message=context
-        ).with_model("openai", "gpt-4o-mini")
+        # chat = LlmChat(
+        #     api_key=EMERGENT_LLM_KEY,
+        #     session_id=f"user_{current_user.id}",
+        #     system_message=context
+        # ).with_model("openai", "gpt-4o-mini")
         
         user_message = UserMessage(text=message_data.message)
         response = await chat.send_message(user_message)
