@@ -336,10 +336,10 @@ async def chat_with_ai(message_data: ChatMessage, current_user: User = Depends(g
         #     system_message=context
         # ).with_model("openai", "gpt-4o-mini")
         
-        user_message = UserMessage(text=message_data.message)
-        response = await chat.send_message(user_message)
+        # user_message = UserMessage(text=message_data.message)
+        # response = await chat.send_message(user_message)
         
-        return ChatResponse(response=response)
+        # return ChatResponse(response=response)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI service error: {str(e)}")
