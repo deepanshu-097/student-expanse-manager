@@ -333,10 +333,16 @@ async def chat_with_ai(message_data: ChatMessage, current_user: User = Depends(g
         
 
 
-# Health check
+try:
+    db.connect()
+    db.query("SELECT * FROM users")
+except Exception as e:   # <-- this closes the try
+    print(f"Database error: {e}")
+
 @api_router.get("/")
-async def root():
-    return {"message": "Student Expense Manager API", "status": "running"}
+def root():
+    return {"message": "Hello, world!"}
+
 
 # Include the router in the main app
 app.include_router(api_router)
