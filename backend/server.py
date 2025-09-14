@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 import hashlib
 import jwt
-
+from contextlib import asynccontextmanager
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -22,21 +22,32 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# JWT Secret (in production, use a secure random secret)
+# JWT Secret
 JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
 
 # Security
 security = HTTPBearer()
 
-# Create the main app without a prefix
-app = FastAPI(title="Student Expense Manager", version="1.0.0")
+# Main FastAPI app
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    client.close()
 
-# Create a router with the /api prefix
+app = FastAPI(
+    title="Student Expense Manager",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Router with prefix
 api_router = APIRouter(prefix="/api")
 
-# AI Chat instance
+# AI Key
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 
+
+# Helpers
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -46,7 +57,7 @@ def verify_password(password: str, hashed: str) -> bool:
 def create_jwt_token(user_id: str) -> str:
     payload = {
         'user_id': user_id,
-        'exp': datetime.now(timezone.utc).timestamp() + 86400  # 24 hours
+        'exp': datetime.now(timezone.utc).timestamp() + 86400
     }
     return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
 
@@ -67,7 +78,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-# Pydantic Models
+
+# Models
 class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     email: EmailStr
@@ -94,7 +106,7 @@ class Expense(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
     amount: float
-    category: str  # Food, Travel, Study Material, Personal, Other
+    category: str
     date: datetime
     notes: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -108,10 +120,10 @@ class ExpenseCreate(BaseModel):
 class Budget(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
-    type: str  # 'monthly' or 'category'
-    category: Optional[str] = None  # Required if type is 'category'
+    type: str
+    category: Optional[str] = None
     amount: float
-    month: int  # 1-12
+    month: int
     year: int
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -143,7 +155,8 @@ class ChatResponse(BaseModel):
     response: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-# Helper function to serialize datetime for MongoDB
+
+# Mongo helpers
 def prepare_for_mongo(data):
     if isinstance(data, dict):
         for key, value in data.items():
@@ -161,15 +174,14 @@ def parse_from_mongo(item):
                     pass
     return item
 
-# Authentication Routes
+
+# Routes
 @api_router.post("/auth/register", response_model=UserResponse)
 async def register(user_data: UserCreate):
-    # Check if user already exists
     existing_user = await db.users.find_one({'email': user_data.email})
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Create new user
     user = User(
         email=user_data.email,
         name=user_data.name,
@@ -178,7 +190,6 @@ async def register(user_data: UserCreate):
     
     user_dict = prepare_for_mongo(user.dict())
     await db.users.insert_one(user_dict)
-    
     return UserResponse(**user.dict())
 
 @api_router.post("/auth/login")
@@ -189,24 +200,17 @@ async def login(login_data: UserLogin):
     
     token = create_jwt_token(user['id'])
     user_obj = parse_from_mongo(user)
-    
     return {
         'access_token': token,
         'token_type': 'bearer',
         'user': UserResponse(**user_obj)
     }
 
-# Expense Routes
 @api_router.post("/expenses", response_model=Expense)
 async def create_expense(expense_data: ExpenseCreate, current_user: User = Depends(get_current_user)):
-    expense = Expense(
-        user_id=current_user.id,
-        **expense_data.dict()
-    )
-    
+    expense = Expense(user_id=current_user.id, **expense_data.dict())
     expense_dict = prepare_for_mongo(expense.dict())
     await db.expenses.insert_one(expense_dict)
-    
     return expense
 
 @api_router.get("/expenses", response_model=List[Expense])
@@ -219,7 +223,6 @@ async def get_expense(expense_id: str, current_user: User = Depends(get_current_
     expense = await db.expenses.find_one({'id': expense_id, 'user_id': current_user.id})
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
-    
     return Expense(**parse_from_mongo(expense))
 
 @api_router.put("/expenses/{expense_id}", response_model=Expense)
@@ -233,7 +236,6 @@ async def update_expense(expense_id: str, expense_data: ExpenseCreate, current_u
         {'id': expense_id, 'user_id': current_user.id},
         {'$set': update_data}
     )
-    
     updated_expense = await db.expenses.find_one({'id': expense_id, 'user_id': current_user.id})
     return Expense(**parse_from_mongo(updated_expense))
 
@@ -242,20 +244,13 @@ async def delete_expense(expense_id: str, current_user: User = Depends(get_curre
     result = await db.expenses.delete_one({'id': expense_id, 'user_id': current_user.id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Expense not found")
-    
     return {"message": "Expense deleted successfully"}
 
-# Budget Routes
 @api_router.post("/budgets", response_model=Budget)
 async def create_budget(budget_data: BudgetCreate, current_user: User = Depends(get_current_user)):
-    budget = Budget(
-        user_id=current_user.id,
-        **budget_data.dict()
-    )
-    
+    budget = Budget(user_id=current_user.id, **budget_data.dict())
     budget_dict = prepare_for_mongo(budget.dict())
     await db.budgets.insert_one(budget_dict)
-    
     return budget
 
 @api_router.get("/budgets", response_model=List[Budget])
@@ -263,17 +258,11 @@ async def get_budgets(current_user: User = Depends(get_current_user)):
     budgets = await db.budgets.find({'user_id': current_user.id}).to_list(1000)
     return [Budget(**parse_from_mongo(budget)) for budget in budgets]
 
-# Savings Goals Routes
 @api_router.post("/savings-goals", response_model=SavingsGoal)
 async def create_savings_goal(goal_data: SavingsGoalCreate, current_user: User = Depends(get_current_user)):
-    goal = SavingsGoal(
-        user_id=current_user.id,
-        **goal_data.dict()
-    )
-    
+    goal = SavingsGoal(user_id=current_user.id, **goal_data.dict())
     goal_dict = prepare_for_mongo(goal.dict())
     await db.savings_goals.insert_one(goal_dict)
-    
     return goal
 
 @api_router.get("/savings-goals", response_model=List[SavingsGoal])
@@ -292,59 +281,36 @@ async def add_to_savings(goal_id: str, amount: float, current_user: User = Depen
         {'id': goal_id, 'user_id': current_user.id},
         {'$set': {'current_amount': new_amount}}
     )
-    
     updated_goal = await db.savings_goals.find_one({'id': goal_id, 'user_id': current_user.id})
     return SavingsGoal(**parse_from_mongo(updated_goal))
 
-# Analytics Routes
 @api_router.get("/analytics/expense-summary")
 async def get_expense_summary(current_user: User = Depends(get_current_user)):
     expenses = await db.expenses.find({'user_id': current_user.id}).to_list(1000)
-    
     total_expenses = sum(expense['amount'] for expense in expenses)
     category_totals = {}
-    
     for expense in expenses:
         category = expense['category']
         category_totals[category] = category_totals.get(category, 0) + expense['amount']
-    
     return {
         'total_expenses': total_expenses,
         'category_breakdown': category_totals,
         'expense_count': len(expenses)
     }
 
-# AI Chat Routes
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat_with_ai(message_data: ChatMessage, current_user: User = Depends(get_current_user)):
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=500, detail="AI service not configured")
-    
-    try:
-        # Get user's recent expenses for context
-        recent_expenses = await db.expenses.find({'user_id': current_user.id}).sort('date', -1).limit(10).to_list(10)
-        
-        # Prepare context about user's expenses
-        context = f"""You are a financial advisor AI for a student expense management app. 
-        The user {current_user.name} has recent expenses: {len(recent_expenses)} transactions.
-        Provide helpful, concise financial advice and answer questions about budgeting, saving, and expense management.
-        Keep responses friendly and educational for students."""
-
-        
-
-
-try:
-    db.connect()
-    db.query("SELECT * FROM users")
-except Exception as e:   # <-- this closes the try
-    print(f"Database error: {e}")
+    # TODO: Implement AI call
+    return ChatResponse(response=f"AI response to: {message_data.message}")
 
 @api_router.get("/")
 def root():
     return {"message": "Hello, world!"}
 
 
-# Include the router in the main app
+# Register router & middleware
 app.include_router(api_router)
 
 app.add_middleware(
@@ -355,18 +321,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
+# Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield
-    client.close()
-
-app = FastAPI(lifespan=lifespan)
